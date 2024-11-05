@@ -48,8 +48,13 @@ browser.browserAction.onClicked.addListener(async (tab) => {
         // Get the markdown content
         let markdown = await response.text();
 
+        // Decode the title first
+        const decodedPageTitle = decodeURIComponent(pageTitle);
+
+        console.log('Decoded title:', decodedPageTitle);
+
         // Add the title and blank line at the start of the content
-        markdown = `# ${pageTitle}\n\n${markdown}`;
+        markdown = `# ${decodedPageTitle}\n\n${markdown}`;
 
         // Create a blob from the markdown content
         const blob = new Blob([markdown], { type: 'text/markdown' });
