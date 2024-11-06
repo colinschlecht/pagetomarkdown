@@ -1,6 +1,6 @@
 **Markdown Page Downloader for Firefox**
 
-https://addons.mozilla.org/en-US/firefox/addon/page-to-markdown/
+https://addons.mozilla.org/firefox/addon/page-to-markdown/
 
 Easily convert and download any webpage as a Markdown file with the Markdown Page Downloader extension for Firefox! This powerful tool allows you to quickly save the content of the current page in a clean and organized Markdown format, making it perfect for note-taking, archiving, or sharing.
 
