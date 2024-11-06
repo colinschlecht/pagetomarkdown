@@ -19,99 +19,29 @@ const turndownService = new TurndownService({
 turndownService.addRule('figures', {
     filter: 'figure',
     replacement: function(content, node) {
+        console.log('Processing figure:', node);
         const img = node.querySelector('img');
         const caption = node.querySelector('figcaption');
         if (img) {
             const alt = img.getAttribute('alt') || '';
             const src = img.getAttribute('src') || '';
             const captionText = caption ? caption.textContent : '';
+            console.log('Figure processed:', { alt, src, captionText });
             return `![${alt}](${src})\n${captionText}\n\n`;
         }
         return content;
     }
 });
 
-function cleanupDocument(doc) {
-    // Common selectors for unwanted content
-    const selectorsToRemove = [
-        // Ads
-        '[class*="ad-"]',
-        '[class*="ads-"]',
-        '[class*="advertisement"]',
-        '[id*="ad-"]',
-        '[id*="ads-"]',
-        // Social media
-        '[class*="social"]',
-        '[id*="social"]',
-        // Related content
-        '[class*="related"]',
-        '[id*="related"]',
-        '[class*="recommended"]',
-        '[id*="recommended"]',
-        // Comments
-        '[class*="comments"]',
-        '[id*="comments"]',
-        // Sidebars
-        'aside',
-        '[class*="sidebar"]',
-        '[id*="sidebar"]',
-        // Navigation
-        'nav',
-        '[role="navigation"]',
-        // Footers
-        'footer',
-        '[class*="footer"]',
-        '[id*="footer"]',
-        // Other common unwanted elements
-        '[class*="popup"]',
-        '[class*="modal"]',
-        '[class*="newsletter"]',
-        '[class*="subscribe"]',
-        '[class*="share"]',
-        '[class*="popular"]',
-        '[class*="trending"]',
-        '[class*="more-links"]',
-        '[class*="outbrain"]',
-        '[class*="taboola"]',
-        // Common ad networks
-        '[class*="doubleclick"]',
-        '[class*="adsense"]'
-    ];
-
-    // Remove elements matching selectors
-    selectorsToRemove.forEach(selector => {
-        try {
-            doc.querySelectorAll(selector).forEach(element => {
-                element.remove();
-            });
-        } catch (e) {
-            console.log(`Error removing selector ${selector}:`, e);
-        }
-    });
-
-    // Remove empty paragraphs and divs
-    doc.querySelectorAll('p, div').forEach(element => {
-        if (element.innerHTML.trim() === '') {
-            element.remove();
-        }
-    });
-
-    // Remove hidden elements
-    doc.querySelectorAll('*').forEach(element => {
-        const style = window.getComputedStyle(element);
-        if (style.display === 'none' || style.visibility === 'hidden') {
-            element.remove();
-        }
-    });
-
-    return doc;
-}
+// Store the clean metadata in a closure to prevent it from being affected by DOM cleanup
+let preservedMetadata = null;
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log('Message received in content script:', message);
     if (message.action === "convert") {
         convertPageToMarkdown()
         .then(markdownData => {
+            console.log('Conversion successful:', markdownData);
             sendResponse({
                 success: true,
                 markdownContent: markdownData.content,
@@ -126,94 +56,182 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 });
 
-// ... [previous code remains the same until convertPageToMarkdown function] ...
-
 async function convertPageToMarkdown() {
     console.log('Starting conversion...');
     try {
-        // Create a proper document clone
+        // First pass just for metadata extraction from pristine HTML
+        const metadataClone = document.implementation.createHTMLDocument();
+        const metadataDoc = document.documentElement.cloneNode(true);
+        metadataClone.documentElement.replaceWith(metadataDoc);
+
+        console.log('Creating Readability instance for metadata extraction...');
+        const metadataReader = new Readability(metadataClone, {
+            debug: true,
+            charThreshold: 20
+        });
+
+        const metadataArticle = metadataReader.parse();
+
+        // Store the clean metadata immediately after extraction
+        preservedMetadata = {
+            // Readability extracted
+            title: metadataArticle?.title,
+            byline: metadataArticle?.byline,
+            siteName: metadataArticle?.siteName,
+            excerpt: metadataArticle?.excerpt,
+
+            // OpenGraph
+            ogTitle: metadataDoc.querySelector('meta[property="og:title"]')?.content,
+            ogDescription: metadataDoc.querySelector('meta[property="og:description"]')?.content,
+            ogSiteName: metadataDoc.querySelector('meta[property="og:site_name"]')?.content,
+            ogType: metadataDoc.querySelector('meta[property="og:type"]')?.content,
+            ogImage: metadataDoc.querySelector('meta[property="og:image"]')?.content,
+
+            // Twitter Cards
+            twitterTitle: metadataDoc.querySelector('meta[name="twitter:title"]')?.content,
+            twitterDescription: metadataDoc.querySelector('meta[name="twitter:description"]')?.content,
+            twitterCreator: metadataDoc.querySelector('meta[name="twitter:creator"]')?.content,
+
+            // Schema.org JSON-LD
+            jsonLd: (() => {
+                try {
+                    const scripts = metadataDoc.querySelectorAll('script[type="application/ld+json"]');
+                    return Array.from(scripts).map(script => JSON.parse(script.textContent));
+                } catch (e) {
+                    console.error('Error parsing JSON-LD:', e);
+                    return [];
+                }
+            })(),
+
+            // Dublin Core
+            dcTitle: metadataDoc.querySelector('meta[name="DC.title"]')?.content,
+            dcCreator: metadataDoc.querySelector('meta[name="DC.creator"]')?.content,
+            dcDescription: metadataDoc.querySelector('meta[name="DC.description"]')?.content,
+            dcDate: metadataDoc.querySelector('meta[name="DC.date"]')?.content,
+
+            // Standard HTML metadata
+            metaDescription: metadataDoc.querySelector('meta[name="description"]')?.content,
+            metaAuthor: metadataDoc.querySelector('meta[name="author"]')?.content,
+            metaKeywords: metadataDoc.querySelector('meta[name="keywords"]')?.content,
+            canonicalUrl: metadataDoc.querySelector('link[rel="canonical"]')?.href,
+
+            // Publication date
+            publishDate: metadataDoc.querySelector('meta[property="article:published_time"]')?.content ||
+            metadataDoc.querySelector('time[pubdate]')?.getAttribute('datetime') ||
+            metadataDoc.querySelector('[class*="publish"],[class*="date"]')?.textContent
+        };
+
+        console.log('Extracted metadata:', preservedMetadata);
+
+        // Second clone for content
         const documentClone = document.implementation.createHTMLDocument();
         const doc = document.documentElement.cloneNode(true);
         documentClone.documentElement.replaceWith(doc);
 
-        // Clean up the document before parsing
-        cleanupDocument(documentClone);
-
-        // Wait for any dynamic content to load
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        console.log('Creating Readability instance...');
+        console.log('Creating Readability instance for content...');
         const reader = new Readability(documentClone, {
             debug: true,
             charThreshold: 20,
-            // Readability options for better cleaning
             keepClasses: false,
             cleanConditionally: true,
-            removeEmpty: true,
-            weight: {
-                classes: {
-                    'ad': -50,
-                    'ads': -50,
-                    'advertisement': -50,
-                    'related': -40,
-                    'recommended': -40,
-                    'share': -30,
-                    'social': -30
-                }
-            }
+            removeEmpty: true
         });
 
         const article = reader.parse();
-        console.log('Readability parsing complete');
+        console.log('Content parsing complete');
 
         if (!article) {
             throw new Error('Could not parse page content');
         }
 
-        // Fallback content if Readability fails to parse meaningful content
-        if (!article.content || article.content.trim().length === 0) {
-            console.log('Falling back to basic content extraction');
-            const mainContent = document.body.innerHTML;
-            article.content = mainContent;
-            article.title = article.title || document.title;
-        }
+        // Create a temporary container for the parsed content
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = article.content;
 
-        // Get site name from multiple sources if not available
-        let siteName = article.siteName;
-        if (!siteName || siteName.trim() === '') {
-            siteName = [
-                document.querySelector('meta[property="og:site_name"]')?.content,
-                document.querySelector('meta[name="application-name"]')?.content,
-                JSON.parse(document.querySelector('script[type="application/ld+json"]')?.textContent || '{}')?.publisher?.name,
-                window.location.hostname.replace('www.', '').split('.')[0],
-            ].find(name => name && name.trim() !== '') || window.location.hostname.replace('www.', '');
-        }
+        // Post-Readability cleanup
+        const postCleanup = (element) => {
+            // Remove empty elements
+            element.querySelectorAll('*').forEach(el => {
+                if (el.innerHTML.trim() === '') {
+                    console.log('Removing empty element post-parse:', el.outerHTML);
+                    el.remove();
+                }
+            });
 
-        // Clean up title and site name
-        const cleanTitle = (article.title || 'Untitled').trim();
-        siteName = siteName.trim();
+            // Remove any remaining unwanted elements that Readability might have missed
+            const unwantedSelectors = [
+                'script', 'style', 'iframe',
+                '[class*="advertisement"]',
+                '[class*="social-share"]',
+                '[class*="related-articles"]',
+                '[class*="newsletter"]',
+                '[role="complementary"]'
+            ];
 
-        // Create filename with article title and site name
-        const fileName = `${cleanTitle} - ${siteName}.txt`
+            unwantedSelectors.forEach(selector => {
+                element.querySelectorAll(selector).forEach(el => {
+                    console.log('Removing unwanted element post-parse:', el.outerHTML.substring(0, 100));
+                    el.remove();
+                });
+            });
+
+            // Clean up whitespace
+            element.innerHTML = element.innerHTML
+            .replace(/\s+/g, ' ')
+            .replace(/>\s+</g, '><')
+            .trim();
+
+            return element;
+        };
+
+        // Clean the parsed content
+        const cleanedContent = postCleanup(tempDiv);
+
+        // Use the preserved metadata for final output
+        const finalMetadata = {
+            title: preservedMetadata.ogTitle || preservedMetadata.twitterTitle || preservedMetadata.title || 'Untitled',
+            byline: preservedMetadata.byline || preservedMetadata.metaAuthor || preservedMetadata.dcCreator || '',
+            siteName: preservedMetadata.ogSiteName || preservedMetadata.siteName || window.location.hostname.replace('www.', ''),
+            description: preservedMetadata.ogDescription || preservedMetadata.excerpt || preservedMetadata.metaDescription || '',
+            publishDate: preservedMetadata.publishDate || preservedMetadata.dcDate || new Date().toISOString()
+        };
+
+        // Sanitize the metadata
+        const sanitizedMetadata = {
+            title: finalMetadata.title?.replace(/\s+/g, ' ').trim(),
+            byline: finalMetadata.byline?.replace(/\s+/g, ' ').trim(),
+            siteName: finalMetadata.siteName?.trim(),
+            description: finalMetadata.description?.replace(/\s+/g, ' ').trim(),
+            publishDate: finalMetadata.publishDate
+        };
+
+        // Create filename
+        const fileName = `${sanitizedMetadata.title} - ${sanitizedMetadata.siteName}.txt`
         .replace(/[/\\?%*:|"<>]/g, '-')
         .replace(/\s+/g, ' ');
 
         console.log('Filename will be:', fileName);
 
         // Construct the markdown content
-        let markdownContent = `# ${cleanTitle}\n\n`;
+        let markdownContent = `# ${sanitizedMetadata.title}\n\n`;
 
-        // Add metadata if available
-        if (article.byline) {
-            markdownContent += `Author: ${article.byline}\n\n`;
+        if (sanitizedMetadata.byline) {
+            markdownContent += `Author: ${sanitizedMetadata.byline}\n`;
         }
-        markdownContent += `Source: ${siteName}\n`;
-        markdownContent += `URL: ${document.URL}\n`;
-        markdownContent += `Date saved: ${new Date().toISOString()}\n\n---\n\n`;
+        if (sanitizedMetadata.publishDate) {
+            markdownContent += `Date: ${sanitizedMetadata.publishDate}\n`;
+        }
+        markdownContent += `Source: ${sanitizedMetadata.siteName}\n`;
+        markdownContent += `URL: ${preservedMetadata.canonicalUrl || document.URL}\n`;
+        markdownContent += `Date saved: ${new Date().toISOString()}\n\n`;
+
+        if (sanitizedMetadata.description) {
+            markdownContent += `> ${sanitizedMetadata.description}\n\n`;
+        }
+        markdownContent += `---\n\n`;
 
         console.log('Converting to Markdown...');
-        // Convert HTML to Markdown
-        markdownContent += turndownService.turndown(article.content);
+        markdownContent += turndownService.turndown(cleanedContent.innerHTML);
         console.log('Conversion complete');
 
         return {
